@@ -1,0 +1,23 @@
+.font-browser,.transition-browser{padding:8px;overflow:auto;display:flex;flex-direction:column;gap:5px}.font-browser>select{height:27px;background:#171717;border:1px solid #373737}.font-row{display:flex;align-items:center;border-bottom:1px solid #303030;min-height:42px}.font-preview{flex:1;min-width:0;text-align:left;align-items:flex-start;flex-direction:column;gap:1px}.font-preview span{font-size:15px;color:#eee}.font-preview small{font-size:9px;color:#777;white-space:nowrap;max-width:155px;overflow:hidden;text-overflow:ellipsis}.font-fav{font-size:17px}.loading-line{font-size:10px;color:#aaa;padding:7px}.font-select-row{display:flex;gap:4px;margin-top:5px}.font-select-row select{min-width:0;flex:1}.font-select-row button{border:1px solid #383838;font-size:10px}.text-style-row{display:flex;gap:4px;margin-top:7px}.text-style-row>*{flex:1;justify-content:center;border:1px solid #353535;font-size:10px}.text-style-row .chosen{background:#888;color:#111}.animation-tabs{display:flex;margin:5px 0;border-bottom:1px solid #333}.animation-tabs button{flex:1;border-bottom:2px solid transparent}.animation-tabs button.active{border-color:white;color:white}.animation-list{max-height:180px;overflow:auto}.animation-row{display:flex;border-bottom:1px solid #303030}.animation-apply{flex:1;justify-content:space-between;text-align:left;font-size:10px}.animation-apply small{color:#777;margin-left:auto;margin-right:6px}.animation-card{border:1px solid #383838;padding:5px;margin-top:5px}.animation-card b{flex:1;font-size:10px}.animation-card label{display:flex;justify-content:space-between;align-items:center;margin:5px 2px;color:#999;font-size:10px}.animation-card input,.animation-card select{width:92px}.effect-category{font-size:10px}.transition-browser .effect-row{width:100%}.transition-modal .inline-setting{margin:10px 0}.transition-modal .inline-setting select,.transition-modal .inline-setting input{width:150px}.transition-indicator{position:absolute;left:3px;top:3px;z-index:3;width:18px;height:18px;padding:0;background:#fff;color:#111;font-size:9px;font-weight:700}.tabs{overflow-x:auto}.tabs button{flex:none;min-width:42px;padding:0 8px}
+.inspect-sub{display:flex;justify-content:space-between;margin:9px 0 5px;font-size:9px;letter-spacing:.08em;color:#7d7d7d;text-transform:uppercase}
+.inspect-sub span{color:#ddd;text-transform:none;letter-spacing:0}
+.inspect-hint{margin:7px 0 0;font-size:10px;line-height:1.45;color:#7b7b7b}
+.char-index{font-size:10px;color:#bbb;text-align:center;align-self:center}
+.file-btn{position:relative;overflow:hidden;display:inline-flex;align-items:center;justify-content:center;border:1px solid #353535;font-size:10px;color:#ccc;cursor:pointer;padding:0 8px;height:26px}
+.file-btn input{position:absolute;inset:0;opacity:0;cursor:pointer;width:100%}
+.inspect-section .wide-btn{height:28px;font-size:10px}
+@container (max-width: 420px){
+ .prop-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+.recent-chips{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:6px;max-height:60px;overflow:auto}
+.recent-chips button{border:1px solid #333;padding:2px 7px;font-size:11px;color:#ccc}
+.recent-chips button:hover{border-color:#777;color:#fff}
+.animation-row{content-visibility:auto;contain-intrinsic-size:30px}
+.anim-preview{width:30px;height:22px;flex:none;display:grid;place-items:center;font-size:10px;color:#e8e8e8;border:1px solid #2e2e2e;margin:3px 0 3px 3px;background:#141414;overflow:hidden}
+.preview-in{animation:flintPreviewIn 1.5s cubic-bezier(.2,.7,.2,1) infinite}
+.preview-out{animation:flintPreviewOut 1.5s cubic-bezier(.2,.7,.2,1) infinite}
+.preview-loop{animation:flintPreviewLoop 1.3s ease-in-out infinite}
+@keyframes flintPreviewIn{0%,10%{opacity:0;transform:translateY(7px) scale(.8)}45%,100%{opacity:1;transform:none}}
+@keyframes flintPreviewOut{0%,45%{opacity:1;transform:none}90%,100%{opacity:0;transform:translateY(-6px) scale(.85)}}
+@keyframes flintPreviewLoop{0%,100%{transform:translateY(0) rotate(0)}50%{transform:translateY(-4px) rotate(4deg)}}
+@media(prefers-reduced-motion:reduce){.anim-preview{animation:none}}

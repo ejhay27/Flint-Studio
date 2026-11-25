@@ -1,1 +1,1 @@
-import React from 'react';import{createRoot}from'react-dom/client';import App from'./workspace';import'./style.css';import'./effects.css';import'./phase4.css';import'./audio.css';createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);
+import React from 'react';import{createRoot}from'react-dom/client';import App from'./workspace';import'./style.css';import'./effects.css';import'./phase4.css';import'./audio.css';import'./phase6.css';createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);

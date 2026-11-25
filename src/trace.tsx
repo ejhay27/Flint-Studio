@@ -665,7 +665,7 @@ export default function TracePanel({ layer, project, playhead, onClose, onLayer,
                 <Pin size={12} />{attachData?.enabled ? 'Detach' : 'Attach layer'}
               </button>
             </div>
-            <p className="trace-hint">Feature tracking uses NCC template matching on real frames. Low-confidence points hold their last position and are flagged rather than guessed.</p>
+            <p className="trace-hint">Feature tracking uses NCC template matching on real frames. Low-confidence points hold their last position and are flagged rather than guessed. Face and body landmark tracking would need a downloadable ML model; Flint ships none, so landmark tracking is not offered rather than simulated.</p>
           </section>
 
           <section className="trace-section">

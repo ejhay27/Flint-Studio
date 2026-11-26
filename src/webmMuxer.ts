@@ -31,6 +31,8 @@ const ID = {
   TrackType: 0x83,
   CodecID: 0x86,
   CodecPrivate: 0x63a2,
+  CodecDelay: 0x56aa,
+  SeekPreRoll: 0x56bb,
   Audio: 0xe1,
   SamplingFrequency: 0xb5,
   Channels: 0x9f,
@@ -129,7 +131,7 @@ export type WebmTrack = {
   height: number;
   fps: number;
   /** Optional Opus audio track. Omit for a video-only file. */
-  audio?: { sampleRate: number; channels: number; codecPrivate?: Uint8Array };
+  audio?: { sampleRate: number; channels: number; codecPrivate?: Uint8Array; codecDelayNs?: number; seekPreRollNs?: number };
 };
 
 export type EncodedChunk = {
@@ -244,6 +246,8 @@ export class WebmMuxer {
             element(ID.TrackType, uint(2, 1)),
             element(ID.CodecID, str('A_OPUS')),
             ...(this.track.audio.codecPrivate ? [element(ID.CodecPrivate, this.track.audio.codecPrivate)] : []),
+            ...(this.track.audio.codecDelayNs ? [element(ID.CodecDelay, uint(this.track.audio.codecDelayNs, 4))] : []),
+            ...(this.track.audio.seekPreRollNs ? [element(ID.SeekPreRoll, uint(this.track.audio.seekPreRollNs, 4))] : []),
             element(
               ID.Audio,
               concat([

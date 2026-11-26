@@ -332,6 +332,7 @@ export class FlintCompositor {
   private layerRT: Target | null = null;
   private matteRT: Target | null = null;
   private fxRT: Target | null = null;
+  private tmpRT: Target | null = null;
   private quadScene = new THREE.Scene();
   private quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private quad: THREE.Mesh;
@@ -452,12 +453,14 @@ export class FlintCompositor {
       this.disposeTarget(this.layerRT);
       this.disposeTarget(this.matteRT);
       this.disposeTarget(this.fxRT);
+      this.disposeTarget(this.tmpRT);
       this.layerRT = this.makeTarget(tw, th, true);
       this.matteRT = this.makeTarget(tw, th, true);
       this.fxRT = this.makeTarget(tw, th, false);
+      this.tmpRT = this.makeTarget(tw, th, false);
     }
-    const bytes = tw * th * 4 * 5;
-    this.stats.targets = 5;
+    const bytes = tw * th * 4 * 6;
+    this.stats.targets = 6;
     this.stats.textureBytes = bytes;
   }
 
@@ -512,7 +515,8 @@ export class FlintCompositor {
     this.disposeTarget(this.layerRT);
     this.disposeTarget(this.matteRT);
     this.disposeTarget(this.fxRT);
-    this.a = this.b = this.layerRT = this.matteRT = this.fxRT = null;
+    this.disposeTarget(this.tmpRT);
+    this.a = this.b = this.layerRT = this.matteRT = this.fxRT = this.tmpRT = null;
     for (const m of this.effectMats.values()) m.dispose();
     this.effectMats.clear();
     this.compMat.dispose();
@@ -629,7 +633,8 @@ export class FlintCompositor {
       b = this.b!,
       layerRT = this.layerRT!,
       matteRT = this.matteRT!,
-      fxTarget = this.fxRT!;
+      fxTarget = this.fxRT!,
+      tmpTarget = this.tmpRT!;
 
     // clear accumulation
     this.renderer.setRenderTarget(a.rt);
@@ -638,29 +643,46 @@ export class FlintCompositor {
     this.renderer.clear(true, true, true);
     this.renderer.setRenderTarget(null);
     let acc = a;
-    let other = b;
+    let spare = b;
 
     const byId = new Map<string, LayerPass>();
     for (const item of opts.items) if (item.type === 'layer') byId.set(item.id, item);
+
+    const swap = () => {
+      const t = acc;
+      acc = spare;
+      spare = t;
+    };
 
     for (const item of opts.items) {
       if (item.type === 'adjustment') {
         if (!stackReady(item.effects)) continue;
         const mat = this.effectMaterial(item.effects!);
-        const u = mat.uniforms;
-        u.tInput.value = acc.rt.texture;
-        u.flintFrame.value = 0;
-        // render effect pass into `other`, then blend/copy back through composite
-        this.drawQuad(mat, other);
-        // composite the adjusted result over the untouched accumulation so masks
-        // and opacity behave like any other layer pass
-        this.composite(other.rt.texture, acc.rt.texture, {
-          mask: item.mask || null,
-          opacity: item.opacity ?? 1,
-          blend: item.blend || 'normal',
-          width: opts.width,
-          height: opts.height,
-        }, acc);
+        mat.uniforms.tInput.value = acc.rt.texture;
+        // adjusted copy of the composite so far
+        this.drawQuad(mat, tmpTarget);
+        const adjBlend = item.blend || 'normal';
+        if (adjBlend === 'normal') {
+          // straight alpha over: hardware blending replaces only inside the mask
+          this.compMat.blending = THREE.NormalBlending;
+          this.composite(tmpTarget.rt.texture, null, {
+            mask: item.mask || null,
+            opacity: item.opacity ?? 1,
+            blend: adjBlend,
+            width: opts.width,
+            height: opts.height,
+          }, acc);
+          this.compMat.blending = THREE.NoBlending;
+        } else {
+          this.composite(tmpTarget.rt.texture, acc.rt.texture, {
+            mask: item.mask || null,
+            opacity: item.opacity ?? 1,
+            blend: adjBlend,
+            width: opts.width,
+            height: opts.height,
+          }, spare);
+          swap();
+        }
         this.stats.adjustments++;
         continue;
       }
@@ -686,11 +708,8 @@ export class FlintCompositor {
 
       const blend = item.blend || 'normal';
       if (blend === 'normal') {
-        // straight alpha over: hardware blending handles the maths
+        // straight alpha over: hardware blending handles the maths, no read-back
         this.compMat.blending = THREE.NormalBlending;
-        this.compMat.depthTest = false;
-        this.renderer.setRenderTarget(acc.rt);
-        this.compMat.uniforms.tDst.value = null;
         this.composite(layerTex, null, {
           mask: item.mask || null,
           matteTex,
@@ -703,6 +722,7 @@ export class FlintCompositor {
         }, acc);
         this.compMat.blending = THREE.NoBlending;
       } else {
+        // blend modes read the destination, so write into the spare target
         this.composite(layerTex, acc.rt.texture, {
           mask: item.mask || null,
           matteTex,
@@ -712,10 +732,8 @@ export class FlintCompositor {
           blend,
           width: opts.width,
           height: opts.height,
-        }, other);
-        const t = acc;
-        acc = other;
-        other = t;
+        }, spare);
+        swap();
       }
       this.stats.layers++;
     }

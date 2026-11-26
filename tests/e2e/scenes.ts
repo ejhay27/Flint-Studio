@@ -65,4 +65,3 @@ export const encodeScene = (scene: unknown) => Buffer.from(JSON.stringify(scene)
 /** Export/sync scene: reused by the offline export spec. It is built from the
  * animated scene because test media (two clips of one source, a trimmed clip and
  * an audio pulse) must be generated at runtime, which the spec does after boot. */
-export const sceneExportSync = sceneAnimation30;

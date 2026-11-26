@@ -54,8 +54,11 @@ export const quantiseTime = (seconds: number) => Math.round(seconds * 1e6) / 1e6
 
 export type FrameResult = {
   time: number;
-  /** True when the returned frame was decoded for this exact request. */
+  /** Presentation interval of the frame that was actually returned. */
+  interval: { start: number; end: number };
+  /** True when the requested time falls inside the returned frame's interval. */
   exact: boolean;
+  /** True when the returned frame ends before the requested time. */
   stale: boolean;
 };
 
@@ -140,6 +143,20 @@ export class VideoFrameProvider {
   private disposed = false;
   private onSeeked = () => this.settle(null);
   private onError = () => this.settle(new MediaFrameError('Video element failed while seeking'));
+  private static registry = new WeakMap<VideoLike, VideoFrameProvider>();
+  /** One provider per video element so seeks never interleave. */
+  static for(video: VideoLike, timeoutMs = 4000) {
+    let p = VideoFrameProvider.registry.get(video);
+    if (!p) {
+      p = new VideoFrameProvider(video, timeoutMs);
+      VideoFrameProvider.registry.set(video, p);
+    }
+    return p;
+  }
+
+  /** Assumed presentation duration of one frame; VFR sources override per result. */
+  frameDuration = 1 / 30;
+
   constructor(video: VideoLike, private timeoutMs = 4000) {
     this.video = video;
     video.addEventListener('seeked', this.onSeeked);
@@ -188,26 +205,11 @@ export class VideoFrameProvider {
       return;
     }
     const mediaTime = this.video.currentTime;
-    const exact = Math.abs(mediaTime - waiting.time) <= 0.5 / 1000 + 1e-6;
-    if (!exact) {
-      // The element settled on a different frame than requested - this is a
-      // stale frame, so report it as such instead of pretending it matches.
-      this.finish(waiting, { time: mediaTime, exact: false, stale: true });
-      return;
-    }
-    if (typeof this.video.requestVideoFrameCallback === 'function') {
-      const handle = this.video.requestVideoFrameCallback(() => {
-        this.finish(waiting, { time: this.video.currentTime, exact: true, stale: false });
-      });
-      setTimeout(() => {
-        if (this.current === waiting) {
-          this.video.cancelVideoFrameCallback?.(handle);
-          this.finish(waiting, { time: this.video.currentTime, exact: true, stale: false });
-        }
-      }, Math.min(250, this.timeoutMs));
-    } else {
-      this.finish(waiting, { time: mediaTime, exact: true, stale: false });
-    }
+    const interval = { start: mediaTime, end: mediaTime + this.frameDuration };
+    // A seek does not have to land on the requested timestamp: it is valid when
+    // the requested time falls inside the returned frame's presentation interval.
+    const cls = frameClassFor(interval, waiting.time);
+    this.finish(waiting, { time: mediaTime, interval, exact: cls === 'exact', stale: cls === 'stale' });
   }
 
   private finish(waiter: Waiter, result: FrameResult | undefined, error?: unknown) {
@@ -230,4 +232,56 @@ export class VideoFrameProvider {
     this.video.removeEventListener('seeked', this.onSeeked);
     this.video.removeEventListener('error', this.onError);
   }
+}
+
+/**
+ * A decoded frame is valid for a requested time when that time falls inside the
+ * frame's presentation interval, not when the timestamps are equal. VFR footage
+ * and platform timestamps are never exactly equal to the requested time.
+ */
+export type FrameInterval = { start: number; end: number };
+
+export function frameContains(interval: FrameInterval, time: number, tolerance = 1e-4): boolean {
+  return time >= interval.start - tolerance && time <= interval.end + tolerance;
+}
+
+export function frameClassFor(interval: FrameInterval, time: number): 'exact' | 'stale' | 'future' {
+  if (frameContains(interval, time)) return 'exact';
+  return interval.end < time ? 'stale' : 'future';
+}
+
+/**
+ * Resolve every active video clip at one composition time and await its frame.
+ * Clips sharing a source are fetched through the same provider at their own
+ * timestamps; the provider serialises the seeks, so results are still correct.
+ */
+export type ActiveClip = { id: string; clip: ClipTiming; provider: VideoLike; getProvider: () => Promise<VideoLike | null> };
+
+export async function awaitMediaForFrame(
+  compFrame: number,
+  clips: Array<{ id: string; clip: ClipTiming; provider: VideoLike }>,
+  opts: { tolerance?: number } = {},
+): Promise<{ resolved: Array<{ id: string; time: number; exact: boolean; stale: boolean }>; skipped: string[] }> {
+  const resolved: Array<{ id: string; time: number; exact: boolean; stale: boolean }> = [];
+  const skipped: string[] = [];
+  for (const entry of clips) {
+    const time = sourceTimeForClip(compFrame, entry.clip);
+    if (time === null) {
+      skipped.push(entry.id);
+      continue;
+    }
+    const provider = VideoFrameProvider.for(entry.provider);
+    const result = await provider.frameAt(time);
+    if (!result.exact) {
+      // A different presentation interval than requested: valid only if the
+      // requested time still falls inside the returned frame's own interval.
+      const interval = result.interval ?? { start: result.time, end: result.time + (opts.tolerance ?? 0) };
+      const cls = frameClassFor(interval, time);
+      if (cls !== 'exact') resolved.push({ id: entry.id, time, exact: false, stale: true });
+      else resolved.push({ id: entry.id, time, exact: true, stale: false });
+      continue;
+    }
+    resolved.push({ id: entry.id, time, exact: true, stale: false });
+  }
+  return { resolved, skipped };
 }

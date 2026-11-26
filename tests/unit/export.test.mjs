@@ -131,3 +131,31 @@ test('vint/uint encodings round-trip expected widths', () => {
   assert.deepEqual([...W.vint(128)], [0x40, 0x80]);
   assert.deepEqual([...W.elemId(0x1a45dfa3)], [0x1a, 0x45, 0xdf, 0xa3]);
 });
+
+test('webm muxer writes an Opus audio track, interleaved blocks and multi-track clusters', () => {
+  const audio = { sampleRate: 48000, channels: 2, codecPrivate: W.opusHead(2) };
+  const mux = new W.WebmMuxer({ codec: 'V_VP9', width: 1280, height: 720, fps: 30, audio });
+  const bytes = new Uint8Array([0x1a, 0x45, 0xdf, 0xa3]);
+  assert.equal([...audio.codecPrivate.slice(0, 8)].map(b => String.fromCharCode(b)).join(''), 'OpusHead');
+  assert.equal(audio.codecPrivate.length, 19);
+  for (let i = 0; i < 4; i++) {
+    mux.addChunk({ data: bytes, timestamp: i / 30, duration: 1 / 30, keyframe: i === 0 });
+    mux.addAudioChunk({ data: bytes, timestamp: i / 30 + 0.006, duration: 0.02, keyframe: true });
+  }
+  const file = mux.finalize();
+  const text = new TextDecoder('latin1').decode(file);
+  assert.ok(text.includes('A_OPUS'), 'opus codec id present');
+  assert.equal(mux.chunkCount, 4);
+  assert.equal(mux.audioChunkCount, 4);
+  const blocks = (text.match(/\xa3/g) || []).length;
+  assert.ok(blocks >= 8, 'video and audio simple blocks written');
+});
+
+test('audio chunks require an audio track and cannot follow finalisation', () => {
+  const mux = new W.WebmMuxer({ codec: 'V_VP8', width: 320, height: 180, fps: 25 });
+  assert.throws(() => mux.addAudioChunk({ data: new Uint8Array([1]), timestamp: 0, duration: 0.02, keyframe: true }), /no audio track/);
+  const withAudio = new W.WebmMuxer({ codec: 'V_VP8', width: 320, height: 180, fps: 25, audio: { sampleRate: 48000, channels: 1 } });
+  withAudio.addAudioChunk({ data: new Uint8Array([1]), timestamp: 0, duration: 0.02, keyframe: true });
+  withAudio.finalize();
+  assert.throws(() => withAudio.addAudioChunk({ data: new Uint8Array([2]), timestamp: 0.02, duration: 0.02, keyframe: true }), /already finalised/);
+});

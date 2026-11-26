@@ -86,17 +86,35 @@ test('provider does not resolve a request until the seek completes', async () =>
   provider.dispose();
 });
 
+test('a frame whose interval contains the request is accepted (valid PT difference)', async () => {
+  const video = new FakeVideo();
+  let target = 0;
+  Object.defineProperty(video, 'currentTime', {
+    get: () => target,
+    set: v => { setTimeout(() => { target = v - 0.01; video.listeners.seeked?.forEach(fn => fn()); }, 5); },
+  });
+  const provider = new M.VideoFrameProvider(video, 500);
+  provider.frameDuration = 1 / 30;
+  const result = await provider.frameAt(2);
+  assert.equal(result.exact, true, 'requested time inside the returned interval');
+  assert.equal(result.stale, false);
+  provider.dispose();
+});
+
 test('provider flags a stale frame instead of returning the wrong one as exact', async () => {
   const video = new FakeVideo();
   let target = 0;
   Object.defineProperty(video, 'currentTime', {
     get: () => target,
-    set: v => { setTimeout(() => { target = v + 0.04; video.listeners.seeked?.forEach(fn => fn()); }, 5); },
+    set: v => { setTimeout(() => { target = v - 0.5; video.listeners.seeked?.forEach(fn => fn()); }, 5); },
   });
   const provider = new M.VideoFrameProvider(video, 500);
   const result = await provider.frameAt(2);
   assert.equal(result.exact, false);
   assert.equal(result.stale, true);
+  assert.equal(M.frameClassFor({ start: 2, end: 2.033 }, 2.0), 'exact');
+  assert.equal(M.frameClassFor({ start: 2, end: 2.033 }, 1.99), 'future', 'frame is ahead of the request');
+  assert.equal(M.frameClassFor({ start: 2, end: 2.033 }, 2.1), 'stale', 'frame is behind the request');
   provider.dispose();
 });
 
@@ -117,4 +135,43 @@ test('provider rejects unready media, times out and cancels on dispose', async (
   const pending = p3.frameAt(1);
   p3.dispose();
   await assert.rejects(() => pending, /disposed/);
+});
+
+test('awaitMediaForFrame resolves every active clip at its own source time', async () => {
+  const make = () => {
+    const v = new FakeVideo();
+    let target = 0;
+    Object.defineProperty(v, 'currentTime', {
+      get: () => target,
+      set: x => { setTimeout(() => { target = x; v.listeners.seeked?.forEach(fn => fn()); }, 1); },
+    });
+    return v;
+  };
+  const shared = make();
+  const clips = [
+    { id: 'A', provider: shared, clip: { start: 0, duration: 30, compFps: 30, inPoint: 1 } },
+    { id: 'B', provider: shared, clip: { start: 0, duration: 30, compFps: 30, inPoint: 4 } },
+    { id: 'C', provider: shared, clip: { start: 20, duration: 5, compFps: 30 } },
+  ];
+  const out = await M.awaitMediaForFrame(0, clips);
+  assert.deepEqual(out.resolved.map(r => [r.id, +r.time.toFixed(4), r.exact, r.stale]), [
+    ['A', 1, true, false],
+    ['B', 4, true, false],
+  ]);
+  assert.deepEqual(out.skipped, ['C'], 'clip not live at this composition time');
+});
+
+test('awaitMediaForFrame honours fractional composition frames and trimming', async () => {
+  const v = new FakeVideo();
+  let target = 0;
+  Object.defineProperty(v, 'currentTime', {
+    get: () => target,
+    set: x => { setTimeout(() => { target = x; v.listeners.seeked?.forEach(fn => fn()); }, 1); },
+  });
+  const clip = { start: 0, duration: 30, compFps: 30, inPoint: 2 };
+  for (const frame of [0, 0.5, 1, 1.5]) {
+    const out = await M.awaitMediaForFrame(frame, [{ id: 'A', provider: v, clip }]);
+    assert.equal(+out.resolved[0].time.toFixed(4), +(2 + frame / 30).toFixed(4));
+    assert.equal(out.resolved[0].exact, true);
+  }
 });

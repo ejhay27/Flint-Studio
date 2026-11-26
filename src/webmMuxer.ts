@@ -30,6 +30,10 @@ const ID = {
   TrackUID: 0x73c5,
   TrackType: 0x83,
   CodecID: 0x86,
+  CodecPrivate: 0x63a2,
+  Audio: 0xe1,
+  SamplingFrequency: 0xb5,
+  Channels: 0x9f,
   DefaultDuration: 0x23e383,
   Video: 0xe0,
   PixelWidth: 0xb0,
@@ -105,11 +109,27 @@ function str(value: string): Uint8Array {
   return enc.encode(value);
 }
 
+/** 19-byte OpusHead identification header required for CodecPrivate. */
+export function opusHead(channels = 2, sampleRate = 48000, preSkip = 312): Uint8Array {
+  const out = new Uint8Array(19);
+  out.set(enc.encode('OpusHead'), 0);
+  const dv = new DataView(out.buffer);
+  dv.setUint8(8, 1);
+  dv.setUint8(9, channels);
+  dv.setUint16(10, preSkip, true);
+  dv.setUint32(12, sampleRate, true);
+  dv.setInt16(16, 0, true);
+  dv.setUint8(18, 0);
+  return out;
+}
+
 export type WebmTrack = {
   codec: 'V_VP8' | 'V_VP9';
   width: number;
   height: number;
   fps: number;
+  /** Optional Opus audio track. Omit for a video-only file. */
+  audio?: { sampleRate: number; channels: number; codecPrivate?: Uint8Array };
 };
 
 export type EncodedChunk = {
@@ -126,7 +146,7 @@ export const msOf = (seconds: number) => Math.max(0, Math.round(seconds * 1000))
 
 export class WebmMuxer {
   private clusters: Uint8Array[] = [];
-  private pending: EncodedChunk[] = [];
+  private pending: Array<EncodedChunk & { track: number }> = [];
   private clusterStartMs = 0;
   private lastMs = -1;
   private chunks = 0;
@@ -156,15 +176,32 @@ export class WebmMuxer {
       this.flushCluster();
       this.clusterStartMs = ms;
     }
-    this.pending.push({ ...chunk, timestamp: ms / 1000 });
+    this.pending.push({ ...chunk, timestamp: ms / 1000, track: 1 });
+  }
+
+  /** Add one encoded Opus packet (requires an audio track on this muxer). */
+  addAudioChunk(chunk: EncodedChunk) {
+    if (this.finished) throw new Error('WebmMuxer: already finalised');
+    if (!this.track.audio) throw new Error('WebmMuxer: no audio track configured');
+    const ms = msOf(chunk.timestamp);
+    this.audioChunks++;
+    this.bytes += chunk.data.byteLength;
+    if (this.pending.length === 0) this.clusterStartMs = ms;
+    this.pending.push({ ...chunk, timestamp: ms / 1000, track: 2 });
+    if (this.pending.length > 512) this.flushCluster();
+  }
+  private audioChunks = 0;
+  get audioChunkCount() {
+    return this.audioChunks;
   }
 
   private flushCluster() {
     if (!this.pending.length) return;
-    const blocks = this.pending.map(c => {
+    const ordered = [...this.pending].sort((a, b) => msOf(a.timestamp) - msOf(b.timestamp));
+    const blocks = ordered.map(c => {
       const rel = new Uint8Array(2);
-      new DataView(rel.buffer).setInt16(0, msOf(c.timestamp) - this.clusterStartMs);
-      const header = new Uint8Array([0x81, rel[0], rel[1], c.keyframe ? 0x80 : 0x00]);
+      new DataView(rel.buffer).setInt16(0, Math.max(-32768, Math.min(32767, msOf(c.timestamp) - this.clusterStartMs)));
+      const header = new Uint8Array([0x80 | c.track, rel[0], rel[1], c.track === 1 && c.keyframe ? 0x80 : 0x00]);
       return element(ID.SimpleBlock, concat([header, c.data]));
     });
     this.clusters.push(element(ID.Cluster, concat([element(ID.Timecode, uint(this.clusterStartMs, 4)), ...blocks])));
@@ -198,8 +235,28 @@ export class WebmMuxer {
         element(ID.Duration, float64(durationSec)),
       ]),
     );
+    const audioEntry = this.track.audio
+      ? element(
+          ID.TrackEntry,
+          concat([
+            element(ID.TrackNumber, uint(2, 1)),
+            element(ID.TrackUID, uint(2, 1)),
+            element(ID.TrackType, uint(2, 1)),
+            element(ID.CodecID, str('A_OPUS')),
+            ...(this.track.audio.codecPrivate ? [element(ID.CodecPrivate, this.track.audio.codecPrivate)] : []),
+            element(
+              ID.Audio,
+              concat([
+                element(ID.SamplingFrequency, float64(this.track.audio.sampleRate)),
+                element(ID.Channels, uint(this.track.audio.channels, 1)),
+              ]),
+            ),
+          ]),
+        )
+      : null;
     const tracks = element(
       ID.Tracks,
+      concat([
       element(
         ID.TrackEntry,
         concat([
@@ -214,6 +271,8 @@ export class WebmMuxer {
           ),
         ]),
       ),
+      ...(audioEntry ? [audioEntry] : []),
+      ]),
     );
     return concat([ebml, element(ID.Segment, concat([info, tracks, ...this.clusters]))]);
   }

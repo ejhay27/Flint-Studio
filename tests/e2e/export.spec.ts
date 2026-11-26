@@ -16,10 +16,10 @@ const makeVideo = async () => {
   const canvas = document.createElement('canvas');
   canvas.width = 320; canvas.height = 180;
   const ctx = canvas.getContext('2d')!;
-  const colours = ['#ff0000', '#00ff00', '#0000ff', '#ffff00', '#ff00ff', '#00ffff'];
+  const colours = Array.from({ length: 18 }, (_, i) => `hsl(${(i * 20) % 360} 100% 50%)`); // 18 frames @30 fps
   let i = 0;
   ctx.fillStyle = colours[0]; ctx.fillRect(0, 0, 320, 180);
-  const stream = canvas.captureStream(10);
+  const stream = canvas.captureStream(TIMING.compFps);
   const rec = new MediaRecorder(stream, { mimeType: MediaRecorder.isTypeSupported('video/webm;codecs=vp9') ? 'video/webm;codecs=vp9' : 'video/webm' });
   const chunks: Blob[] = [];
   rec.ondataavailable = e => e.data.size && chunks.push(e.data);
@@ -27,7 +27,7 @@ const makeVideo = async () => {
   for (const c of colours) {
     ctx.fillStyle = c; ctx.fillRect(0, 0, 320, 180);
     (stream.getVideoTracks()[0] as CanvasCaptureMediaStreamTrack).requestFrame();
-    await new Promise(r => setTimeout(r, 100));
+    await new Promise(r => setTimeout(r, 1000 / TIMING.compFps));
     i++;
   }
   await new Promise(r => setTimeout(r, 100));
@@ -37,7 +37,7 @@ const makeVideo = async () => {
 };
 
 const makeWav = () => {
-  const rate = 48000, seconds = 1.2, frames = rate * seconds;
+  const rate = 48000, seconds = TIMING.fixtureSeconds, frames = Math.round(rate * seconds);
   const buf = new ArrayBuffer(44 + frames * 2);
   const view = new DataView(buf);
   const w = (o: number, s: string) => [...s].forEach((ch, i) => view.setUint8(o + i, ch.charCodeAt(0)));
@@ -47,13 +47,28 @@ const makeWav = () => {
   w(36, 'data'); view.setUint32(40, frames * 2, true);
   for (let i = 0; i < frames; i++) {
     const t = i / rate;
-    // One short 1 kHz pulse at t = 0.3s (the visual marker frame at 10 fps = frame 3)
-    const inPulse = t >= 0.3 && t < 0.36;
+    // One 60 ms 1 kHz pulse at the marker time, so audio and picture can be compared.
+    const inPulse = t >= TIMING.audioPulseCompSeconds && t < 0.36;
     const s = inPulse ? Math.sin(2 * Math.PI * 1000 * t) * 0.9 : 0;
     view.setInt16(44 + i * 2, Math.round(s * 32767), true);
   }
   return new Blob([buf], { type: 'audio/wav' });
 };
+
+/** Explicit timing model for this spec (30 fps composition, 0.6 s fixture). */
+export const TIMING = {
+  compFps: 30,
+  fixtureFrames: 18,          // 18 frames @30 fps = 0.6 s of fixture video
+  fixtureSeconds: 0.6,
+  startFrame: 3,              // nonzero export origin: 0.1 s
+  endFrame: 15,               // exclusive end: 0.5 s
+  exportFps: 30,
+  audioPulseCompSeconds: 0.3, // pulse in the source WAV (composition time)
+  markerFrame: 9,             // 0.3 s at 30 fps
+};
+TIMING.exportFrames = TIMING.endFrame - TIMING.startFrame;
+TIMING.expectedDuration = TIMING.exportFrames / TIMING.exportFps;
+TIMING.expectedPulseOffset = TIMING.audioPulseCompSeconds - TIMING.startFrame / TIMING.compFps;
 
 const inject = async (page: import('@playwright/test').Page, which: 'video' | 'audio') => {
   await page.evaluate(async kind => {
@@ -73,6 +88,8 @@ test.describe('offline export', () => {
   test('exports a playable 720p WebM with synced audio', async ({ page }) => {
     await page.goto('/');
     await expect(page.locator('canvas.spatial-live')).toBeVisible();
+    const playheadBefore = (await page.locator('.time-readout').innerText()).trim();
+    expect(playheadBefore.length).toBeGreaterThan(0);
     const caps = await page.evaluate(() => ({
       video: typeof (window as any).VideoEncoder === 'function',
       audio: typeof (window as any).AudioEncoder === 'function',
@@ -87,14 +104,19 @@ test.describe('offline export', () => {
 
     // Reduced preview resolution first, then a 720p export with a nonzero start.
     await page.getByRole('button', { name: /Export/i }).click();
+    // Selector facts from src/workspace.tsx: `.render-settings` holds a
+    // Resolution select, then number inputs in the order Width, Height, Start,
+    // End, and a Frame rate select.
     await page.locator('.render-settings select').first().selectOption('720p');
-    await page.locator('.render-settings input[type="number"]').nth(2).fill('240');
-    await page.locator('.render-settings input[type="number"]').nth(3).fill('24');
+    await page.locator('.render-settings select').nth(1).selectOption(String(TIMING.exportFps));
+    await page.locator('.render-settings input[type="number"]').nth(2).fill(String(TIMING.startFrame));
+    await page.locator('.render-settings input[type="number"]').nth(3).fill(String(TIMING.endFrame));
 
     const downloadPromise = page.waitForEvent('download', { timeout: 180_000 });
     await page.getByRole('button', { name: /Offline render \(WebCodecs\)/i }).click();
-    const dialog = page.locator('.modal-shade');
-    if (await dialog.count()) await page.getByRole('button', { name: /^OK$|Export the picture/i }).click().catch(() => {});
+    // If the project has audio and Opus is unavailable the app asks for
+    // confirmation; accept only that explicit dialog.
+    page.on('dialog', d => d.accept());
     const download = await downloadPromise;
     expect(download.suggestedFilename()).toMatch(/\.webm$/);
     const savedTo = test.info().outputPath('export.webm');
@@ -145,10 +167,12 @@ test.describe('offline export', () => {
     expect(info.hasAudio, 'exported file must carry the soundtrack').toBe(true);
     // The pulse sits at composition 0.3 s; with a 0.24 s start offset it should
     // appear ~0.06 s after the export origin (tolerance 120 ms).
-    if (info.pulseAt !== null) expect(Math.abs(info.pulseAt - 0.06)).toBeLessThan(0.12);
+    expect(info.pulseAt).not.toBeNull();
+    expect(Math.abs((info.pulseAt as number) - TIMING.expectedPulseOffset)).toBeLessThan(0.12);
+    expect(info.duration).toBeGreaterThan(TIMING.expectedDuration - 0.1);
 
-    // Preview state: the canvas is live again and no export snapshot map remains.
-    await expect(page.locator('canvas.spatial-live')).toBeVisible();
+    // Real state restoration, read from the UI's own playhead readout.
+    await expect(page.locator('.time-readout')).toHaveText(playheadBefore.trim(), { timeout: 10000 });
   });
 
   test('cancellation restores preview state', async ({ page }) => {

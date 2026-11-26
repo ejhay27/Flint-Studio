@@ -95,3 +95,7 @@
 .diag-grid span{color:#7c7c7c}
 .diag-grid b{font-weight:500;color:#e2e2e2;text-align:right}
 .diag-note{margin-top:7px;font-size:8px;color:#5f5f5f;letter-spacing:.04em}
+.render-settings{display:grid;grid-template-columns:1fr 1fr;gap:6px;padding-top:10px;border-top:1px solid #333}
+.render-settings label{display:flex;align-items:center;justify-content:space-between;font-size:9.5px;color:#8f8f8f;gap:6px}
+.render-settings input,.render-settings select{width:76px;height:23px;font-size:10px;padding:2px 4px}
+.render-settings input[type=checkbox]{width:auto;height:auto}

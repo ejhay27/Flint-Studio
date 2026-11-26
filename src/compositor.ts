@@ -49,6 +49,13 @@ const MATTE_CODES: Record<MatteKind, number> = {
 
 export type MaskRef = { texture: THREE.Texture; invert?: boolean };
 
+/**
+ * Explicit mask/effect ordering. 'after' clips the finished effect result,
+ * 'before' masks the source first so glowing/blurred effects can bleed past
+ * the mask edge. The two paths produce genuinely different pixels.
+ */
+export type MaskOrder = 'before' | 'after';
+
 /** Pre-baked effect stack uniforms (built by the caller from EFFECTS). */
 export type EffectUniforms = {
   count: number;
@@ -69,6 +76,21 @@ export type LayerPass = {
   pin?: { tl: Pt; tr: Pt; br: Pt; bl: Pt } | null;
   /** Effect stack applied to this layer's own pass (used for pre-comps). */
   effects?: EffectUniforms | null;
+  maskOrder?: MaskOrder;
+};
+
+/**
+ * Several objects rendered in one pass: they share a depth buffer, so
+ * occlusion, intersecting geometry and transparent ordering inside the group
+ * are real spatial relationships rather than timeline order.
+ */
+export type GroupPass = {
+  id: string;
+  objects: THREE.Object3D[];
+  opacity?: number;
+  blend?: BlendMode;
+  mask?: MaskRef | null;
+  maskOrder?: MaskOrder;
 };
 
 export type AdjustmentPass = {
@@ -79,7 +101,10 @@ export type AdjustmentPass = {
   blend?: BlendMode;
 };
 
-export type RenderItem = ({ type: 'layer' } & LayerPass) | ({ type: 'adjustment' } & AdjustmentPass);
+export type RenderItem =
+  | ({ type: 'layer' } & LayerPass)
+  | ({ type: 'group' } & GroupPass)
+  | ({ type: 'adjustment' } & AdjustmentPass);
 
 export type RenderOptions = {
   scene: THREE.Scene;
@@ -88,6 +113,8 @@ export type RenderOptions = {
   width: number;
   height: number;
   background: string | null;
+  /** Render into render targets only (no canvas blit); required for export. */
+  offscreen?: boolean;
   /** Composition buffer scale (1 = full resolution). */
   scale?: number;
   /** Editor helpers (null/camera axes) that stay visible in every pass. */
@@ -106,6 +133,8 @@ export type CompositorStats = {
   shaderErrors: string[];
   maxTextureSize: number;
   floatTargets: boolean;
+  groups: number;
+  maskBeforeEffects: number;
 };
 
 /* ------------------------------------------------------------------ math */
@@ -333,6 +362,7 @@ export class FlintCompositor {
   private matteRT: Target | null = null;
   private fxRT: Target | null = null;
   private tmpRT: Target | null = null;
+  private lastResult: Target | null = null;
   private quadScene = new THREE.Scene();
   private quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   private quad: THREE.Mesh;
@@ -355,6 +385,8 @@ export class FlintCompositor {
     shaderErrors: [],
     maxTextureSize: 2048,
     floatTargets: false,
+    groups: 0,
+    maskBeforeEffects: 0,
   };
 
   constructor(renderer: THREE.WebGLRenderer) {
@@ -504,6 +536,27 @@ export class FlintCompositor {
     return mat;
   }
 
+  get resultSize(): { width: number; height: number } {
+    const t = this.lastResult;
+    return { width: t ? t.w : 0, height: t ? t.h : 0 };
+  }
+
+  /**
+   * Read the last composited frame back as RGBA bytes (bottom-up, OpenGL order).
+   * Only used by the export driver - never during preview playback.
+   */
+  readPixels(): { data: Uint8Array; width: number; height: number } | null {
+    const t = this.lastResult;
+    if (!t) return null;
+    const buffer = new Uint8Array(t.w * t.h * 4);
+    try {
+      this.renderer.readRenderTargetPixels(t.rt, 0, 0, t.w, t.h, buffer);
+    } catch {
+      return null;
+    }
+    return { data: buffer, width: t.w, height: t.h };
+  }
+
   /** Effect passes currently cached (diagnostics). */
   get effectMaterialCount() {
     return this.effectMats.size;
@@ -526,6 +579,18 @@ export class FlintCompositor {
     this.stats.textureBytes = 0;
     this.stats.layers = 0;
     this.stats.adjustments = 0;
+    this.stats.groups = 0;
+    this.stats.maskBeforeEffects = 0;
+  }
+
+  private isLayered(items: RenderItem[]) {
+    return items.some(
+      i =>
+        i.type === 'adjustment' ||
+        i.type === 'group' ||
+        i.mask ||
+        (i.type === 'layer' && (i.matte || i.pin || (i.blend && i.blend !== 'normal') || (i.effects && i.effects.count > 0))),
+    );
   }
 
   private setVisibility(scene: THREE.Scene, keep: Set<THREE.Object3D>, always?: THREE.Object3D[]) {
@@ -608,12 +673,12 @@ export class FlintCompositor {
     this.stats.adjustments = 0;
     this.stats.shaderErrors = [];
 
-    const layered = opts.items.some(
-      i => i.type === 'adjustment' || i.mask || i.matte || (i.type === 'layer' && (i.pin || (i.blend && i.blend !== 'normal') || (i.effects && i.effects.count > 0))),
-    );
+    const layered =
+      !!opts.offscreen ||
+      this.isLayered(opts.items);
     this.stats.mode = layered ? 'composite' : 'direct';
 
-    const allObjects = opts.items.flatMap(i => (i.type === 'layer' ? i.objects : []));
+    const allObjects = opts.items.flatMap(i => (i.type === 'adjustment' ? [] : i.objects));
     if (!layered) {
       this.setVisibility(opts.scene, new Set(allObjects), opts.always);
       const r = this.renderer;
@@ -687,9 +752,13 @@ export class FlintCompositor {
         continue;
       }
 
+      if (item.type === 'group') this.stats.groups++;
+      const itemMatte = item.type === 'layer' ? item.matte : null;
+      const itemPin = item.type === 'layer' ? item.pin : null;
+      const itemEffects = item.type === 'layer' ? item.effects : null;
       let matteTex: THREE.Texture | null = null;
-      if (item.matte) {
-        const src = byId.get(item.matte.sourceId);
+      if (itemMatte) {
+        const src = byId.get(itemMatte.sourceId);
         if (src && src.objects.length) {
           this.renderObjects(opts, src.objects, matteRT, 0);
           matteTex = matteRT.rt.texture;
@@ -699,22 +768,39 @@ export class FlintCompositor {
       this.renderObjects(opts, item.objects, layerRT, 0);
 
       let layerTex: THREE.Texture = layerRT.rt.texture;
-      if (stackReady(item.effects)) {
-        const mat = this.effectMaterial(item.effects!);
+      const maskOrder: MaskOrder = item.maskOrder || 'after';
+      const hasMask = !!item.mask;
+
+      // mask-before-effects: clip the source first, then let effects bleed past it
+      if (hasMask && maskOrder === 'before' && stackReady(itemEffects)) {
+        this.compMat.blending = THREE.NoBlending;
+        this.composite(layerTex, null, {
+          mask: item.mask!,
+          opacity: 1,
+          blend: 'normal',
+          width: opts.width,
+          height: opts.height,
+        }, fxTarget);
+        layerTex = fxTarget.rt.texture;
+        this.stats.maskBeforeEffects++;
+      }
+
+      if (stackReady(itemEffects)) {
+        const mat = this.effectMaterial(itemEffects!);
         mat.uniforms.tInput.value = layerTex;
         this.drawQuad(mat, fxTarget);
         layerTex = fxTarget.rt.texture;
       }
 
+      const compositeMask = hasMask && !(maskOrder === 'before' && stackReady(itemEffects)) ? item.mask! : null;
       const blend = item.blend || 'normal';
       if (blend === 'normal') {
-        // straight alpha over: hardware blending handles the maths, no read-back
         this.compMat.blending = THREE.NormalBlending;
         this.composite(layerTex, null, {
-          mask: item.mask || null,
+          mask: compositeMask,
           matteTex,
-          matte: item.matte?.type,
-          pin: item.pin || null,
+          matte: itemMatte?.type,
+          pin: itemPin || null,
           opacity: item.opacity ?? 1,
           blend,
           width: opts.width,
@@ -722,12 +808,11 @@ export class FlintCompositor {
         }, acc);
         this.compMat.blending = THREE.NoBlending;
       } else {
-        // blend modes read the destination, so write into the spare target
         this.composite(layerTex, acc.rt.texture, {
-          mask: item.mask || null,
+          mask: compositeMask,
           matteTex,
-          matte: item.matte?.type,
-          pin: item.pin || null,
+          matte: itemMatte?.type,
+          pin: itemPin || null,
           opacity: item.opacity ?? 1,
           blend,
           width: opts.width,
@@ -736,6 +821,12 @@ export class FlintCompositor {
         swap();
       }
       this.stats.layers++;
+    }
+
+    this.lastResult = acc;
+    if (opts.offscreen) {
+      this.stats.frameMs = (typeof performance !== 'undefined' ? performance.now() : Date.now()) - t0;
+      return true;
     }
 
     // final blit to the visible canvas

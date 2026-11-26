@@ -285,3 +285,63 @@ export async function awaitMediaForFrame(
   }
   return { resolved, skipped };
 }
+
+/**
+ * Copy the current pixels of a source element into an independent snapshot.
+ * Required because several layers can reference one <video>: each layer needs
+ * its own decoded frame held simultaneously, so the final seek cannot
+ * overwrite the frames earlier layers still need.
+ */
+export type Snapshot = { canvas: HTMLCanvasElement; time: number; interval: FrameInterval; width: number; height: number };
+
+export function captureSnapshot(source: CanvasImageSource & { currentTime?: number }, width: number, height: number, time: number): Snapshot | null {
+  if (!(width > 0) || !(height > 0)) return null;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.round(width);
+  canvas.height = Math.round(height);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  try {
+    ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
+  } catch {
+    return null; // tainted or not decodable yet
+  }
+  return { canvas, time, interval: { start: time, end: time }, width: canvas.width, height: canvas.height };
+}
+
+/**
+ * Resolve and snapshot every live clip in one pass. Snapshots are returned in
+ * clip order and stay valid after later seeks; the caller binds them to the
+ * compositor layers and releases them when the frame is done.
+ */
+export async function snapshotMediaForFrame(
+  compFrame: number,
+  clips: Array<{ id: string; clip: ClipTiming; provider: VideoLike & { videoWidth?: number; videoHeight?: number } }>,
+): Promise<{ snapshots: Array<{ id: string; snapshot: Snapshot | null; time: number }>; skipped: string[]; rejected: string[] }> {
+  const snapshots: Array<{ id: string; snapshot: Snapshot | null; time: number }> = [];
+  const skipped: string[] = [];
+  const rejected: string[] = [];
+  for (const entry of clips) {
+    const time = sourceTimeForClip(compFrame, entry.clip);
+    if (time === null) {
+      skipped.push(entry.id);
+      continue;
+    }
+    const provider = VideoFrameProvider.for(entry.provider);
+    const frame = await provider.frameAt(time);
+    if (!frame.exact) {
+      // Never render footage we know is the wrong frame.
+      rejected.push(entry.id);
+      continue;
+    }
+    const w = entry.provider.videoWidth || 0;
+    const h = entry.provider.videoHeight || 0;
+    const snapshot = captureSnapshot(entry.provider as unknown as CanvasImageSource, w, h, time);
+    if (!snapshot) {
+      rejected.push(entry.id);
+      continue;
+    }
+    snapshots.push({ id: entry.id, snapshot, time });
+  }
+  return { snapshots, skipped, rejected };
+}

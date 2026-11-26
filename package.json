@@ -7,7 +7,7 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test:unit": "node --test tests/unit/render.test.mjs",
+    "test:unit": "node --test tests/unit/render.test.mjs tests/unit/media.test.mjs",
     "test:e2e": "playwright test",
     "test:e2e:install": "playwright install --with-deps chromium",
     "test": "npm run test:unit && npm run test:e2e"

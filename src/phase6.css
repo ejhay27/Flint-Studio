@@ -99,3 +99,5 @@
 .render-settings label{display:flex;align-items:center;justify-content:space-between;font-size:9.5px;color:#8f8f8f;gap:6px}
 .render-settings input,.render-settings select{width:76px;height:23px;font-size:10px;padding:2px 4px}
 .render-settings input[type=checkbox]{width:auto;height:auto}
+.diag-save{margin-top:7px;width:100%;border:1px solid #3a3a3a;background:#181818;color:#bbb;font-size:9px;padding:3px 0;font-family:inherit}
+.diag-save:hover{background:#242424;color:#fff}

@@ -79,16 +79,24 @@ export function frameTimestamp(index: number, exportFps: number): number {
   return index / Math.max(1, exportFps);
 }
 
-/** Map an export frame index to the composition frame that must be evaluated. */
+/**
+ * Map an export frame index onto the composition timebase.
+ * Returns a *fractional* composition frame: a 30 fps composition exported at
+ * 60 fps is evaluated at 0, 0.5, 1, 1.5, ... instead of being rounded.
+ */
 export function exportFrameToCompositionFrame(
   index: number,
   settings: ExportSettings,
-  project: { fps: number },
+  project: { fps: number; startFrame?: number },
 ): number {
-  const range = frameRange(settings, { duration: 1e9, fps: project.fps });
-  const start = Math.max(0, range.start);
+  const start = Math.max(0, project.startFrame ?? settings.startFrame ?? 0);
   const seconds = frameTimestamp(index, settings.fps);
-  return Math.round((start / project.fps + seconds) * project.fps);
+  return start + seconds * project.fps;
+}
+
+/** Exact rational step between export frames on the composition timebase. */
+export function compositionFrameStep(exportFps: number, projectFps: number): number {
+  return projectFps / Math.max(1, exportFps);
 }
 
 export type CapabilityReport = {

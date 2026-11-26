@@ -665,7 +665,7 @@ export default function TracePanel({ layer, project, playhead, onClose, onLayer,
                 <Pin size={12} />{attachData?.enabled ? 'Detach' : 'Attach layer'}
               </button>
             </div>
-            <p className="trace-hint">Feature tracking uses NCC template matching on real frames. Low-confidence points hold their last position and are flagged rather than guessed. Face and body landmark tracking would need a downloadable ML model; Flint ships none, so landmark tracking is not offered rather than simulated.</p>
+            <p className="trace-hint">Feature tracking uses NCC template matching on real frames. Low-confidence points hold their last position and are flagged rather than guessed. Landmark tracking is not offered: Flint is a conventional-CV tool and runs no trained models.</p>
           </section>
 
           <section className="trace-section">
@@ -706,7 +706,7 @@ export default function TracePanel({ layer, project, playhead, onClose, onLayer,
               </select>
               <button onClick={() => { fgStrokes.current = []; bgStrokes.current = []; brushLayerRef.current = null; setBrushDirty(d => d + 1); }}>Clear strokes</button>
             </div>
-            <p className="trace-hint">Paint the subject (drag) and the background (Alt-drag). A bundled ML segmentation model is not shipped, so this uses a locally computed colour model with spatial refinement — accurate for distinct subjects, weaker on low-contrast edges. Manual masks remain available.</p>
+            <p className="trace-hint">Paint the subject (drag) and the background (Alt-drag). This uses a locally computed colour/edge model with spatial refinement — accurate for distinct subjects, weaker on low-contrast edges. Manual masks remain available.</p>
           </section>
 
           <section className="trace-section">
